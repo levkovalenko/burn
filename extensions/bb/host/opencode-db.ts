@@ -230,10 +230,11 @@ function v1Reader(db: DatabaseSync, warnOnce: (what: string, err: unknown) => vo
  * The v2 reader: `session_message` rows of `type` user, assistant or compaction, with the
  * prompt text in the user row's `data.text` and the model under `data.model`.
  */
+export const OPENCODE_V2_MESSAGES_SQL =
+  "select id, case when json_valid(data) then json_remove(data, '$.content', '$.files') else 'null' end as data, type, time_created, time_updated from session_message where session_id = ? and type in ('user', 'assistant', 'compaction') order by time_created desc, id desc limit ?";
+
 function v2Reader(db: DatabaseSync, warnOnce: (what: string, err: unknown) => void): SessionReader {
-  const messages = db.prepare(
-    "select id, case when json_valid(data) then json_remove(data, '$.content', '$.files') else 'null' end as data, type, time_created, time_updated from session_message where session_id = ? and type in ('user', 'assistant', 'compaction') order by time_created desc, id desc limit ?",
-  );
+  const messages = db.prepare(OPENCODE_V2_MESSAGES_SQL);
   const userRows = db.prepare(
     "select id, case when json_valid(data) then json_extract(data, '$.text') else null end as text from session_message where session_id = ? and type = 'user' order by time_created, id",
   );

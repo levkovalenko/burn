@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { createOpencodeDb } from "../../extensions/bb/host/opencode-db.js";
+import { createOpencodeDb, OPENCODE_V2_MESSAGES_SQL } from "../../extensions/bb/host/opencode-db.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -249,6 +249,26 @@ describe("createOpencodeDb", () => {
 });
 
 describe("OpenCode 2 database", () => {
+  it("excludes attachments and content from every message returned by the v2 query", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec("create table session_message (id text, session_id text, type text, time_created integer, time_updated integer, data text)");
+      const insert = db.prepare("insert into session_message values (?, ?, ?, ?, ?, ?)");
+      for (const [index, type] of ["user", "assistant", "compaction"].entries()) {
+        insert.run(type, "session", type, AT + index, AT + index, JSON.stringify({ text: "kept", files: [{ url: "data:image/png;base64,AAAA" }], content: [{ text: "tool output" }] }));
+      }
+      insert.run("malformed", "session", "user", AT + 4, AT + 4, "{invalid");
+      const rows = db.prepare(OPENCODE_V2_MESSAGES_SQL).all("session", 100) as unknown as { id: string; data: string }[];
+      expect(rows).toHaveLength(4);
+      expect(JSON.parse(rows.find(row => row.id === "malformed")!.data)).toBeNull();
+      for (const type of ["user", "assistant", "compaction"]) {
+        expect(JSON.parse(rows.find(row => row.id === type)!.data)).toEqual({ text: "kept" });
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("chooses each session's layout and never counts a session in both twice", async () => {
     const files = setup([
       { id: "old", session: "old-session", at: AT, data: assistantAt(0.001, AT) },

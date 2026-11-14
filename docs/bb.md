@@ -10,7 +10,7 @@ On a phone, bb shows the row under the prompt box only while the prompt box is e
 
 ![The Burn card above the chip: $4.27 for this thread, $4.40 with its child thread](../assets/screenshots/bb-chip-card.png)
 
-Each model in the card shows its calls and its output speed, for example `41 calls · 62 tok/s`. The speed is the output tokens of the timed calls, divided by how long those calls took. A call's time runs from the request to the last token, so it includes the wait for the first token, and the speed reads lower than a provider's quoted generation speed. Only pi and OpenCode time their calls, so threads in other harnesses show no speed.
+Each model in the card shows its calls and its output speed, for example `41 calls · 62 tok/s`. The speed is the output tokens of the timed calls, divided by how long those calls took. A call's time runs from the request to the last token, so it includes the wait for the first token, and the speed reads lower than a provider's quoted generation speed. pi, OpenCode and Codex time their calls. For Codex the time comes from the events bb records, and bb keeps them for a day or so, so an older Codex call has no time; threads in other harnesses show no speed.
 
 **Where it went** splits a thread's cost into input, cache write, cache read and output. When a harness reports one total with no split by token kind, that part appears as **Unsplit** in the bar and the legend, with a note saying why, rather than leaving the bar grey.
 

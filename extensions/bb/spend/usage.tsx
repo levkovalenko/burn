@@ -72,7 +72,7 @@ export function Change({ now, before, than, none }: { now: number; before: numbe
   );
 }
 
-const TIMING_HINT = "Only pi and OpenCode record how long a call took and how it ended.";
+const TIMING_HINT = "pi, OpenCode and Codex record how long a call took and how it ended; Claude Code records neither. For Codex the time comes from bb's events, which bb keeps for a day or so.";
 
 export function UsageCards({ data }: { data: SpendOutput }) {
   const { p50, p90, timed, failed } = data.callTime;
@@ -260,8 +260,8 @@ export function CallTime({ data, hide }: { data: SpendOutput; hide?: ReactNode }
         </>
       )}
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        pi and OpenCode threads only: Codex and Claude Code record no call time. Failed means the provider returned an error; stopped means someone or the budget stop
-        aborted the call.
+        pi, OpenCode and Codex threads: Claude Code records no call time. Codex's time comes from bb's item events, which bb keeps for a day or so, so older Codex
+        calls have no time. Failed means the provider returned an error; stopped means someone or the budget stop aborted the call.
       </p>
     </section>
   );
@@ -369,7 +369,10 @@ export function ModelTable({ data, hide }: { data: SpendOutput; hide?: ReactNode
           </tbody>
         </table>
       </div>
-      <p className="mt-1.5 text-[11px] text-muted-foreground">Cache hit, Avg call, Output/s and Failed cover the whole life of the threads in range.</p>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">
+        Cache hit covers the whole life of the threads in range. Avg call, Output/s and Failed cover the calls whose timing Burn recorded: all of them for pi and
+        OpenCode, only recent ones for Codex, and none for Claude Code.
+      </p>
     </section>
   );
 }

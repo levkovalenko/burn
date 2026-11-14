@@ -45,7 +45,7 @@ Router aliases such as `shopify/auto-best` have no known price, so their threads
 ### Harnesses other than pi
 
 - A harness that sends bb no usage, and whose own records Burn does not read, shows nothing.
-- Call time, output speed and failed calls come from pi's session logs and opencode's database, and only from the calls they timed. Codex and Claude Code record none of them, so their figures read "—".
+- Call time, output speed and failed calls come only from the calls that got timed. pi and OpenCode time every call in their own records, and Codex times recent calls from the events bb records, which bb keeps for a day or so; an older Codex call simply does not count in those figures. Claude Code times no call, so its rows read "—".
 - Output speed counts the whole call, from the request to the last token, so it reads lower than a provider's quoted generation speed. Figures that Burn 0.5.3 or older recorded, such as those kept for a machine that is offline, have no speed per prompt, and a model with some untimed calls has no speed until Burn reads that thread's log again.
 - Claude Code threads read saved transcripts, including nested subagent/workflow transcripts, on the execution host. When transcripts are unavailable Burn keeps its last report or falls back to BB events with a limited-coverage notice. Claude Code is still never stopped at its budget; alerts still fire. See [coverage](usage-coverage.md).
 - Usage that bb deleted before Burn first read a thread counts as one entry: the total is right, but the split by day and model is lost. Claude Code's event fallback can lose usage when its running total restarts between turns; transcript reads recover only history still present on disk.
@@ -53,7 +53,7 @@ Router aliases such as `shopify/auto-best` have no known price, so their threads
 ### The Burn page
 
 - The page counts the spend of every thread by the days on which its model calls were made.
-- The Models table's cache hit rate, average call time, output per second and failure rate cover the whole life of the threads in the range, not only the chosen days.
+- The Models table's cache hit rate covers the whole life of the threads in the range, not only the chosen days. Its average call time, output per second and failure rate cover the life of the calls whose timing Burn recorded: every call for pi and OpenCode, only the recent ones for Codex, since that is how long bb keeps the events the timing comes from.
 - The activity map counts by UTC clock hour. In a time zone with a half-hour offset it shifts by half an hour, so calls in the first half hour after midnight show on the previous day.
 - A report from a Burn 0.2 pi extension, or the last report of an offline machine, has no token, call-time or hourly detail until Burn reads the thread again.
 

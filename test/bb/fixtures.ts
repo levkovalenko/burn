@@ -43,8 +43,8 @@ export const totals = (over: Partial<Totals>): Totals => ({
 let eventSeq = 0;
 
 /** A thread event row as bb stores it; every row gets the next seq. */
-export const event = (threadId: string, type: string, data: unknown, at = Date.now()): EventRow =>
-  ({ id: `ev_${++eventSeq}`, scope: { kind: "thread" }, threadId, seq: eventSeq, createdAt: at, type, data }) as unknown as EventRow;
+export const event = (threadId: string, type: string, data: unknown, at = Date.now(), scope: EventRow["scope"] = { kind: "thread" }): EventRow =>
+  ({ id: `ev_${++eventSeq}`, scope, threadId, seq: eventSeq, createdAt: at, type, data }) as unknown as EventRow;
 
 type Request = { initiator?: "user" | "agent" | "system"; kind?: "thread-start" | "new-turn" | "auto" | "steer" };
 export const requestEvent = (threadId: string, text: string, model: string, opts: Request = {}) =>
@@ -54,14 +54,35 @@ export const requestEvent = (threadId: string, text: string, model: string, opts
     input: [{ type: "text", text }],
     execution: { model },
   });
-export const usageEvent = (threadId: string, total: Totals, last: Totals = total, session = "s1") =>
-  event(threadId, "thread/tokenUsage/updated", { providerThreadId: session, tokenUsage: { total, last, modelContextWindow: null } });
+export const usageEvent = (threadId: string, total: Totals, last: Totals = total, session = "s1", at = Date.now()) =>
+  event(threadId, "thread/tokenUsage/updated", { providerThreadId: session, tokenUsage: { total, last, modelContextWindow: null } }, at);
 export const costEvent = (threadId: string, amount: number, currency = "USD", session = "s1") =>
   event(threadId, "thread/contextWindowUsage/updated", {
     providerThreadId: session,
     contextWindowUsage: { cost: { amount, currency }, estimated: false, modelContextWindow: null, usedTokens: null },
   });
 export const identityEvent = (threadId: string, providerThreadId: string) => event(threadId, "thread/identity", { providerThreadId });
+
+/** An item that begins a model call's response; `kind` is the item's type, `scope` for a native child's call. */
+export const itemEvent = (threadId: string, itemId: string, kind: "reasoning" | "agentMessage" | "toolCall" = "agentMessage", session = "s1", at = Date.now(), scope: EventRow["scope"] = { kind: "thread" }) =>
+  event(threadId, "item/started", { providerThreadId: session, item: { type: kind, id: itemId } }, at, scope);
+export type ItemError = { session?: string; willRetry?: boolean; category?: string; at?: number; scope?: EventRow["scope"] };
+export const errorEvent = (threadId: string, over: ItemError = {}) =>
+  event(
+    threadId,
+    "provider/error",
+    {
+      providerThreadId: over.session ?? "s1",
+      message: "rate limited",
+      willRetry: over.willRetry ?? false,
+      errorInfo: { category: over.category ?? "rate-limit", httpStatusCode: 429, providerCode: null },
+    },
+    over.at ?? Date.now(),
+    over.scope ?? { kind: "thread" },
+  );
+/** A native child's turn: bb tags it with the parent tool call it came from. */
+export const turnStartedEvent = (threadId: string, turnId: string, parentToolCallId: string) =>
+  event(threadId, "turn/started", { providerThreadId: "s1", parentToolCallId }, Date.now(), { kind: "turn", turnId });
 
 type ListArgs = { threadId: string; types?: readonly string[]; afterSeq?: string; order?: "asc" | "desc"; limit?: string };
 

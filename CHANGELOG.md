@@ -7,6 +7,7 @@ Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on a
 ## Unreleased
 
 - Read OpenCode 2 session messages and child sessions, while retaining the older schema as a per-session fallback. Include compaction usage and failed calls without token counts.
+- Time the calls a usage bridge records, as for Codex: a call runs from the first item of its response to the usage event that ends it, and a call the provider refuses with an error counts as a call that used no tokens. bb deletes its events after a day or so, so call time, output speed and the failure rate cover only the calls made inside that window.
 
 ## 0.9.4 - 2026-11-06
 

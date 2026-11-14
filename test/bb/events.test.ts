@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventReader } from "../../extensions/bb/events.js";
 import { type EventRow, USAGE_EVENTS } from "../../extensions/bb/ledger.js";
 import type { PriceOverrides } from "../../src/prices.js";
-import { CODEX_1, CODEX_1_2, CODEX_2, event, listEvents, requestEvent, usageEvent } from "./fixtures.js";
+import { CODEX_1, CODEX_1_2, CODEX_2, errorEvent, event, itemEvent, listEvents, requestEvent, turnStartedEvent, usageEvent } from "./fixtures.js";
 
 const T = "thr_aaaaaaaa";
 const PI = "thr_pppppppp";
@@ -170,5 +170,111 @@ describe("createEventReader", () => {
     s.rows.length = 0;
     expect(await reader.reportOf(T, "codex")).toBeNull();
     expect(s.lists().at(-1)?.afterSeq).toBeUndefined();
+  });
+});
+
+describe("the call times the ledger reads from the item events", () => {
+  it("times a call from the agent message that brackets it", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    s.rows.push(
+      requestEvent(T, "go", "gpt-5.5"),
+      itemEvent(T, "i1", "reasoning", "s1", t0),
+      itemEvent(T, "i2", "agentMessage", "s1", t0 + 1_000),
+      usageEvent(T, CODEX_1, CODEX_1, "s1", t0 + 2_600),
+    );
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 1, ms: 2_600, timedOutput: CODEX_1.outputTokens });
+  });
+
+  it("times no call whose response has no item the ledger reads, or that starts with tool output", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    s.rows.push(requestEvent(T, "go", "gpt-5.5"), usageEvent(T, CODEX_1, CODEX_1, "s1", t0 + 500));
+    let got = await s.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 0, ms: 0 });
+
+    const s2 = setup();
+    const t1 = Date.now() - 1000;
+    s2.rows.push(
+      requestEvent(T, "go", "gpt-5.5"),
+      event(T, "item/started", { providerThreadId: "s1", item: { type: "commandExecution", id: "c1" } }, t1),
+      usageEvent(T, CODEX_1, CODEX_1, "s1", t1 + 1_000),
+    );
+    got = await s2.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 0, ms: 0 });
+  });
+
+  it("leaves a call longer than five minutes untimed", async () => {
+    const s = setup();
+    const t0 = Date.now() - 10_000;
+    s.rows.push(
+      requestEvent(T, "go", "gpt-5.5"),
+      itemEvent(T, "i1", "agentMessage", "s1", t0),
+      usageEvent(T, CODEX_1, CODEX_1, "s1", t0 + 6 * 60_000),
+    );
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 0, ms: 0 });
+  });
+
+  it("gives each usage to the call in flight, not one that ended before", async () => {
+    const s = setup();
+    const t0 = Date.now() - 10_000;
+    s.rows.push(
+      requestEvent(T, "go", "gpt-5.5"),
+      itemEvent(T, "i1", "agentMessage", "s1", t0),
+      usageEvent(T, CODEX_1, CODEX_1, "s1", t0 + 6 * 60_000),
+      itemEvent(T, "i2", "agentMessage", "s1", t0 + 7 * 60_000),
+      usageEvent(T, CODEX_1_2, CODEX_2, "s1", t0 + 7 * 60_000 + 500),
+    );
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 2, timed: 1, ms: 500, timedOutput: CODEX_2.outputTokens });
+  });
+
+  it("counts a call the provider refused as a call that used no tokens", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    s.rows.push(requestEvent(T, "go", "gpt-5.5"), errorEvent(T, { at: t0 }));
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report).toMatchObject({ calls: 1, cost: { total: 0 }, tokens: { output: 0 } });
+    // A model that never used a token has no row of its own; the call still counts on the thread and the day.
+    expect(got?.report.byModel).toEqual([]);
+    expect(got?.report.turns[0]?.calls).toBe(1);
+    expect(got?.report.days[0]).toMatchObject({ calls: 1, failed: 0 });
+  });
+
+  it("times a call the provider refused while it was in flight, and counts it failed", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    s.rows.push(requestEvent(T, "go", "gpt-5.5"), itemEvent(T, "i1", "agentMessage", "s1", t0), errorEvent(T, { at: t0 + 8_000 }));
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report).toMatchObject({ calls: 1 });
+    expect(got?.report.days[0]).toMatchObject({ calls: 1, failed: 1, callTime: [0, 0, 0, 0, 1, 0, 0, 0, 0] });
+  });
+
+  it("leaves a call bb will retry uncounted, and times the whole attempt when the retry answers", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    s.rows.push(requestEvent(T, "go", "gpt-5.5"), itemEvent(T, "i1", "agentMessage", "s1", t0), errorEvent(T, { willRetry: true, at: t0 + 1_000 }));
+    expect(await s.reader().reportOf(T, "codex")).toBeNull();
+    s.rows.push(usageEvent(T, CODEX_1, CODEX_1, "s1", t0 + 3_100));
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 1, ms: 3_100, failed: 0 });
+  });
+
+  it("times a native child's call under the child's session", async () => {
+    const s = setup();
+    const t0 = Date.now() - 1000;
+    const scope = { kind: "turn", turnId: "turn_1" } as const;
+    s.rows.push(
+      requestEvent(T, "go", "gpt-5.5"),
+      turnStartedEvent(T, "turn_1", "tc_1"),
+      itemEvent(T, "i1", "agentMessage", "s1", t0, scope),
+      event(T, "thread/tokenUsage/updated", { providerThreadId: "s1", tokenUsage: { total: CODEX_1, last: CODEX_1, modelContextWindow: null } }, t0 + 2_100, scope),
+    );
+    const got = await s.reader().reportOf(T, "codex");
+    expect(got?.report).toMatchObject({ calls: 1 });
+    expect(got?.report.agents).toMatchObject({ coverage: "partial", rows: [{ id: "s1:child:tc_1", calls: 1 }] });
+    expect(got?.report.byModel[0]).toMatchObject({ calls: 1, timed: 1, ms: 2_100 });
   });
 });

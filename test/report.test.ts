@@ -249,6 +249,18 @@ describe("buildReport usage detail", () => {
     expect(r.byModel[0]).toMatchObject({ calls: 3, timed: 0, ms: 0, timedOutput: 0, failed: 0 });
   });
 
+  it("counts a refused call that spent no tokens as a call, failed only when it was timed", () => {
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const refused = (over: { durationMs?: number } = {}) =>
+      at("2026-10-18T12:00:00.000Z")({ type: "message", timestamp: "2026-10-18T12:00:00.000Z", message: { role: "assistant", provider: "p", model: "m1", stopReason: "error", usage: zero, ...over } });
+    const r = buildReport([user(), refused(), user(), refused({ durationMs: 2000 })], null);
+    expect(r.calls).toBe(2);
+    expect(r.cost.total).toBe(0);
+    // A model that never used a token has no row of its own; the calls still count on the thread and the day.
+    expect(r.byModel).toEqual([]);
+    expect(r.days[0]).toMatchObject({ calls: 2, failed: 1 });
+  });
+
   it("counts the output of timed calls apart, so an untimed call does not skew the rate", () => {
     const timed = assistant(1, "m1", { output: 600 }, "p", [], { durationMs: 3000 });
     const untimed = assistant(1, "m1", { output: 900 });

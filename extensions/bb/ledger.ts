@@ -6,19 +6,28 @@ import type { Harness } from "./harnesses.js";
 export type EventRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["events"]["list"]>>[number];
 type RowOf<T extends EventRow["type"]> = Extract<EventRow, { type: T }>;
 
-/** The thread events a ledger reads: who asked for each turn, and what each session used and cost. */
-export const USAGE_EVENTS = ["client/turn/requested", "turn/started", "thread/tokenUsage/updated", "thread/contextWindowUsage/updated"] as const;
+/** The thread events a ledger reads: who asked for each turn, the items that start each call, and what each session used and cost. */
+export const USAGE_EVENTS = [
+  "client/turn/requested",
+  "turn/started",
+  "item/started",
+  "thread/tokenUsage/updated",
+  "thread/contextWindowUsage/updated",
+  "provider/error",
+] as const;
 
 /** A session's token counts as its provider bridge gives them to bb. */
 export type Totals = RowOf<"thread/tokenUsage/updated">["data"]["tokenUsage"]["total"];
 
 export type SplitTokens = TokenParts & { reasoning: number };
 
-/** What one usage event added to a thread; `model` is the bare id the latest request named. */
+/** What one usage event added to a thread; `model` is the bare id the latest request named, and `ms` the call it ended. */
 export type LedgerRecord =
   | { kind: "prompt"; at: number; text: string }
-  | { kind: "tokens"; at: number; session: string; model: string; tokens: SplitTokens; single: boolean }
-  | { kind: "cost"; at: number; session: string; model: string; usd: number };
+  | { kind: "tokens"; at: number; session: string; model: string; tokens: SplitTokens; single: boolean; ms?: number }
+  | { kind: "cost"; at: number; session: string; model: string; usd: number }
+  /** A model call the provider refused; `ms` when it was already in flight, so a refusal before it is untimed. */
+  | { kind: "error"; at: number; session: string; model: string; ms?: number };
 
 export interface SessionState {
   total: Totals | null;
@@ -28,6 +37,8 @@ export interface SessionState {
   usd: number | null;
   /** The harness recorded a cost for the session, so its tokens are never priced. */
   costed: boolean;
+  /** The start of the call in flight: the first item of its response, awaiting the usage event that ends it. */
+  callOpen?: { at: number } | null;
 }
 
 export interface LedgerState {
@@ -73,6 +84,17 @@ function minus(a: Totals, b: Totals): Totals {
 
 const sessionOf = (state: LedgerState, id: string): SessionState =>
   (Object.hasOwn(state.sessions, id) ? state.sessions[id] : undefined) ?? { total: null, usd: null, costed: false };
+
+/** A span that is not one call's: negative is a broken clock, longer a window of calls whose usage bb deleted. */
+const MAX_CALL_MS = 5 * 60 * 1000;
+/** The items that begin a model call's response; the tool items it spawns are not calls. */
+const CALL_ITEM_KINDS = ["reasoning", "agentMessage", "toolCall"] as const;
+
+/** The session an event's scope belongs to: a native child's counters are kept apart from the parent's. */
+const sessionId = (state: LedgerState, data: { providerThreadId: string }, scope: EventRow["scope"]): string => {
+  const child = scope.kind === "turn" ? state.childTurns?.[scope.turnId] : undefined;
+  return child ? `${data.providerThreadId}:child:${child}` : data.providerThreadId;
+};
 
 /** Counters one provider id keeps at once; see withCounter for which drops past this. */
 const COUNTERS = 8;
@@ -147,13 +169,35 @@ function fold(state: LedgerState, row: EventRow, harness: Harness, out: LedgerRe
       out.push({ kind: "prompt", at: row.createdAt, text: promptExcerpt(seen) });
       return true;
     }
+    case "item/started": {
+      // A model call begins with the first item of its response; the items it spawns, such as tool output, are not new calls.
+      if (!(CALL_ITEM_KINDS as readonly string[]).includes(row.data.item.type)) return false;
+      const id = sessionId(state, row.data, row.scope);
+      const session = sessionOf(state, id);
+      if (session.callOpen) return false;
+      state.sessions[id] = { ...session, callOpen: { at: row.createdAt } };
+      return false;
+    }
+    case "provider/error": {
+      // An error bb will retry is not a finished call; the retry's usage, or its final error, counts it.
+      if (row.data.willRetry) return false;
+      const id = sessionId(state, row.data, row.scope);
+      const session = sessionOf(state, id);
+      const open = session.callOpen;
+      const ms = open ? row.createdAt - open.at : null;
+      state.sessions[id] = { ...session, callOpen: null };
+      out.push({ kind: "error", at: row.createdAt, session: id, model: state.model ?? UNKNOWN_MODEL, ...(ms !== null && ms >= 0 && ms <= MAX_CALL_MS ? { ms } : {}) });
+      return true;
+    }
     case "thread/tokenUsage/updated": {
-      const { providerThreadId, tokenUsage } = row.data;
-      const child = row.scope.kind === "turn" ? state.childTurns?.[row.scope.turnId] : undefined;
-      const id = child ? `${providerThreadId}:child:${child}` : providerThreadId;
+      const { tokenUsage } = row.data;
+      const id = sessionId(state, row.data, row.scope);
       const session = sessionOf(state, id);
       const { added, counters } = addedBy(countersOf(session), tokenUsage.total, tokenUsage.last);
-      state.sessions[id] = { ...session, total: tokenUsage.total, earlier: counters.slice(1) };
+      // A usage ends the call that is in flight; the span from that call's first item to here is its time.
+      const open = session.callOpen;
+      const ms = open ? row.createdAt - open.at : null;
+      state.sessions[id] = { ...session, total: tokenUsage.total, earlier: counters.slice(1), callOpen: null };
       if (isZero(added)) return false;
       out.push({
         kind: "tokens",
@@ -162,13 +206,13 @@ function fold(state: LedgerState, row: EventRow, harness: Harness, out: LedgerRe
         model: state.model ?? UNKNOWN_MODEL,
         tokens: splitTokens(added, harness.cacheInInput),
         single: same(added, tokenUsage.last),
+        ...(ms !== null && ms >= 0 && ms <= MAX_CALL_MS ? { ms } : {}),
       });
       return true;
     }
     case "thread/contextWindowUsage/updated": {
-      const { providerThreadId, contextWindowUsage } = row.data;
-      const child = row.scope.kind === "turn" ? state.childTurns?.[row.scope.turnId] : undefined;
-      const id = child ? `${providerThreadId}:child:${child}` : providerThreadId;
+      const { contextWindowUsage } = row.data;
+      const id = sessionId(state, row.data, row.scope);
       const { cost } = contextWindowUsage;
       if (cost === undefined) return false;
       const session = sessionOf(state, id);
@@ -223,11 +267,16 @@ export function ledgerEntries(ledger: Ledger, providerId: string, harness: Harne
         const price = prices === null || sessionOf(state, record.session).costed ? null : priceOf(prices, record.model);
         const cost = price === null ? zeroCost() : listCost(price, record.tokens, { tiers: harness.perCall && record.single });
         const usage = { ...record.tokens, cost, estimated: price !== null };
-        return { type: "message", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), message: { role: "assistant", provider: providerId, model: record.model, usage } };
+        return { type: "message", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), message: { role: "assistant", provider: providerId, model: record.model, ...(record.ms !== undefined ? { durationMs: record.ms } : {}), usage } };
       }
       case "cost": {
         const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { ...zeroCost(), total: record.usd } };
         return { type: "usage", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), provider: providerId, model: record.model, usage };
+      }
+      case "error": {
+        // A refused call spent nothing, but it is still a call: Burn counts it, as it counts opencode's failed calls.
+        const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: zeroCost() };
+        return { type: "message", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), message: { role: "assistant", provider: providerId, model: record.model, ...(record.ms !== undefined ? { durationMs: record.ms } : {}), stopReason: "error", usage } };
       }
     }
   });

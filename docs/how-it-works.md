@@ -25,9 +25,9 @@ For OpenCode threads, the host entry opens `opencode.db` read-only. It is in `$X
 
 ## Reading the usage bb records
 
-The host entry reads pi's logs and opencode's database. Claude Code also uses the host entry to read its transcripts; other harnesses need no host code. Their provider bridges, the adapters that connect an agent such as Codex to bb, already send bb a token-usage event after each model call or turn, and some send a running cost. bb tells the plugin within a second when a thread has new events, and the plugin reads them.
+The host entry reads pi's logs and opencode's database. Claude Code also uses the host entry to read its transcripts; other harnesses need no host code. Their provider bridges, the adapters that connect an agent such as Codex to bb, already send bb a token-usage event after each model call or turn, and some send a running cost. The same events time the calls: a call begins with the first item of its response and ends with the usage event bb records for it, or a provider error that refuses it. Burn times a call from that span, and counts a refused call that used no tokens as a call. bb tells the plugin within a second when a thread has new events, and the plugin reads them.
 
-bb deletes older usage events and keeps only the latest one for each thread. So Burn keeps its own copy of what it read in the plugin's database, and the figures survive a plugin reload.
+bb deletes older events, keeping roughly the last day. So Burn keeps its own copy of what it read in the plugin's database, and the figures survive a plugin reload. A call's time exists only while bb keeps its item events, so a call made before Burn first read the thread, or before bb deleted its events, is counted from its usage but never timed.
 
 ## The pi extension in a bb thread
 

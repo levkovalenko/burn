@@ -634,7 +634,7 @@ describe("Spend page", () => {
     expect(models[1]?.textContent).toContain("Codex");
     expect(models[1]?.textContent).toContain("~$12.30");
     expect(within(models[1] as HTMLElement).getAllByText("—")).toHaveLength(3);
-    expect(slot.getByText("Cache hit, Avg call, Output/s and Failed cover the whole life of the threads in range.")).toBeTruthy();
+    expect(slot.getByText("Cache hit covers the whole life of the threads in range. Avg call, Output/s and Failed cover the calls whose timing Burn recorded: all of them for pi and OpenCode, only recent ones for Codex, and none for Claude Code.")).toBeTruthy();
   });
 
   it("names the provider of models that share a name, and only of those", async () => {
